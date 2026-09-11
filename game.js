@@ -2489,6 +2489,7 @@
       restart: function () { startRun() },
       score: function () { return S.score },
       wave: function () { return S.wave },
+      bombs: function () { return S.p ? S.p.bombs : 0 },
       err: function () { return S.err }
     }
   }
@@ -2536,7 +2537,20 @@
     var btnPause = document.getElementById('btnPause')
     var btnSound = document.getElementById('btnSound')
     var btnRestart = document.getElementById('btnRestart')
+    var btnBomb = document.getElementById('btnBomb')
+    var bombNumEl = document.getElementById('bombNum')
     var fpsEl = document.getElementById('fps')
+    var lastBombs = -1
+
+    /* 浮动炸弹键的剩余数量同步（只在变化时写 DOM） */
+    function syncBomb() {
+      if (!btnBomb) return
+      var n = game.bombs()
+      if (n === lastBombs) return
+      lastBombs = n
+      if (bombNumEl) bombNumEl.textContent = String(n)
+      btnBomb.classList.toggle('is-empty', n <= 0)
+    }
 
     function paintMode(m) {
       if (btnPause) btnPause.textContent = m === 'paused' ? '继续' : '暂停'
@@ -2576,6 +2590,7 @@
       if (steps >= 6) acc = 0
 
       game.render()
+      syncBomb()
 
       frames++
       fpsAcc += dt
@@ -2683,6 +2698,18 @@
         game.restart()
         btnRestart.blur()
       })
+    }
+
+    /* 浮动炸弹键：用 pointerdown 而非 click，手机上零延迟、跟手 */
+    if (btnBomb) {
+      btnBomb.addEventListener('pointerdown', function (e) {
+        e.preventDefault()
+        audio.ensure()
+        game.action()   /* 标题页=开局，游戏中=放炸弹，与空格键语义一致 */
+        syncBomb()
+      })
+      btnBomb.addEventListener('contextmenu', function (e) { e.preventDefault() })
+      syncBomb()
     }
 
     /* 双击页面不选中文字 */

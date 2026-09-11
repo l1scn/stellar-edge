@@ -202,6 +202,81 @@ kbd {
 
 #fps { font-variant-numeric: tabular-nums; }
 
+/* ---------- 触屏浮动炸弹键 ---------- */
+
+.bomb {
+  position: absolute;
+  right: 12px;
+  bottom: 5px;                        /* 压在画布底部 HUD 条上，避开可拖动区域 */
+  width: 58px;
+  height: 58px;
+  border-radius: 50%;
+  display: none;                      /* 默认隐藏，仅触摸设备显示 */
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 0;
+  padding: 0;
+  cursor: pointer;
+  z-index: 2;
+  color: #ffd98a;
+  font-family: inherit;
+  border: 1px solid rgba(255, 205, 120, 0.55);
+  background: radial-gradient(circle at 50% 34%, rgba(96, 66, 12, 0.86), rgba(18, 13, 6, 0.82));
+  box-shadow:
+    0 0 0 1px rgba(255, 200, 120, 0.14),
+    0 0 26px rgba(255, 180, 60, 0.34),
+    0 4px 16px rgba(0, 0, 0, 0.5);
+  -webkit-backdrop-filter: blur(3px);
+  backdrop-filter: blur(3px);
+  touch-action: none;
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
+  transition: transform 0.08s ease, opacity 0.15s ease, box-shadow 0.15s ease;
+}
+
+.bomb-ico { display: block; margin-top: 1px; }
+
+.bomb-num {
+  font-size: 13px;
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  margin-top: 1px;
+}
+
+.bomb:active {
+  transform: scale(0.88);
+  box-shadow:
+    0 0 0 2px rgba(255, 225, 160, 0.5),
+    0 0 40px rgba(255, 195, 80, 0.7);
+}
+
+.bomb.is-empty {
+  opacity: 0.34;
+  color: #9a9a9a;
+  border-color: rgba(150, 150, 150, 0.3);
+  background: rgba(18, 18, 22, 0.72);
+  box-shadow: none;
+}
+
+/* ---------- 触摸设备增强 ---------- */
+
+@media (pointer: coarse) {
+  .bomb { display: flex; }
+
+  /* 手指触控目标放大到接近 44px 建议值 */
+  .btn {
+    min-width: 60px;
+    height: 42px;
+    font-size: 13.5px;
+    border-radius: 10px;
+  }
+  .rail { padding: 8px 10px; gap: 10px; }
+  .rail-right { gap: 8px; }
+}
+
 /* ---------- 窄屏 / 矮屏 ---------- */
 
 @media (max-height: 700px) {

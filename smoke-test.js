@@ -36,6 +36,7 @@ function makeCtx(canvasEl) {
 /* ---------- 假元素 ---------- */
 function makeEl(id) {
   const handlers = {}
+  const classes = new Set()
   const el = {
     id,
     width: 600,
@@ -44,7 +45,16 @@ function makeEl(id) {
     dataset: {},
     textContent: '',
     title: '',
-    classList: { add() {}, remove() {}, toggle() {}, contains() { return false } },
+    classList: {
+      add(c) { classes.add(c) },
+      remove(c) { classes.delete(c) },
+      toggle(c, on) {
+        if (on === undefined) { classes.has(c) ? classes.delete(c) : classes.add(c) }
+        else if (on) classes.add(c)
+        else classes.delete(c)
+      },
+      contains(c) { return classes.has(c) }
+    },
     getBoundingClientRect: () => ({ left: 0, top: 0, width: 600, height: 900 }),
     addEventListener(type, fn) { (handlers[type] = handlers[type] || []).push(fn) },
     removeEventListener() {},
@@ -272,6 +282,27 @@ S.ebullets.push({ x: 300, y: 400, vx: 0, vy: 0, c: '255,90,170', r: 6, life: 5 }
 keydown(' ')
 pump(30)
 check('炸弹清屏', S.p.bombs === 2 && S.ebullets.length < 5, 'bombs=' + S.p.bombs + ' ebullets=' + S.ebullets.length)
+
+/* 8b. 触屏浮动炸弹键 */
+const bombBtn = els.btnBomb
+check('存在浮动炸弹键并已接线',
+  !!(bombBtn && bombBtn.__handlers.pointerdown && bombBtn.__handlers.pointerdown.length))
+if (bombBtn && bombBtn.__handlers.pointerdown && bombBtn.__handlers.pointerdown.length) {
+  S.mode = 'playing'
+  keepAlive()
+  S.p.bombs = 2
+  S.ebullets.push({ x: 300, y: 400, vx: 0, vy: 0, c: '255,90,170', r: 6, life: 5 })
+  bombBtn.__handlers.pointerdown[0]({ preventDefault() {} })
+  pump(20)
+  check('浮动炸弹键能释放炸弹', S.p.bombs === 1 && S.ebullets.length < 5,
+    'bombs=' + S.p.bombs + ' ebullets=' + S.ebullets.length)
+  check('炸弹数量已同步到按钮', els.bombNum && els.bombNum.textContent === '1',
+    'label=' + (els.bombNum ? els.bombNum.textContent : '无'))
+  /* 数量为 0 时应置灰 */
+  S.p.bombs = 0
+  pump(3)
+  check('炸弹耗尽后按钮置灰', els.btnBomb.classList.contains('is-empty'), 'is-empty=' + els.btnBomb.classList.contains('is-empty'))
+}
 
 keydown('p')
 pump(5)

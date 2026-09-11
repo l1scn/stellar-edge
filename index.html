@@ -27,6 +27,17 @@
   <div class="stage">
     <canvas id="stage" width="600" height="900" aria-label="游戏画面"></canvas>
     <canvas id="bloom" width="150" height="225" hidden></canvas>
+
+    <!-- 触屏专用浮动炸弹键：常驻在画布底部 HUD 条上，不侵占可拖动区域 -->
+    <button id="btnBomb" class="bomb" type="button" aria-label="释放炸弹">
+      <svg class="bomb-ico" viewBox="0 0 24 24" width="20" height="20" aria-hidden="true">
+        <circle cx="11" cy="14" r="7" fill="none" stroke="currentColor" stroke-width="2"/>
+        <path d="M11 7 V4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <path d="M8.6 3.4 h4.8" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+        <path d="M17.6 5.6 l2.4 -2.4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <span class="bomb-num" id="bombNum">2</span>
+    </button>
   </div>
 
   <div class="rail">
