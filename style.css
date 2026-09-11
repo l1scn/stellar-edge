@@ -16,6 +16,9 @@ html, body {
   margin: 0;
   padding: 0;
   height: 100%;
+  /* 拖飞机时禁止下拉刷新 / 橡皮筋滚动打断游戏 */
+  overscroll-behavior: none;
+  overscroll-behavior-y: none;
 }
 
 body {
@@ -43,6 +46,10 @@ body {
   /* 画布尺寸：优先占满剩余高度，窄屏时按宽度收敛，始终保持 2:3 */
   --shmup-h: min(calc(100dvh - 148px), 132vw);
   --shmup-w: calc(var(--shmup-h) * 2 / 3);
+  /* 长按不选中文字、不弹出 iOS 长按菜单 */
+  -webkit-user-select: none;
+  user-select: none;
+  -webkit-touch-callout: none;
 }
 
 @supports not (height: 100dvh) {
@@ -169,6 +176,7 @@ kbd {
   color: #cfe9ff;
   border: 1px solid rgba(120, 215, 255, 0.22);
   background: rgba(20, 36, 70, 0.72);
+  touch-action: manipulation;   /* 干掉双击缩放延迟 */
   transition: background 0.15s, border-color 0.15s, transform 0.1s, opacity 0.15s;
 }
 
@@ -206,10 +214,11 @@ kbd {
 
 .bomb {
   position: absolute;
-  right: 12px;
-  bottom: 5px;                        /* 压在画布底部 HUD 条上，避开可拖动区域 */
-  width: 58px;
-  height: 58px;
+  /* 随画布高度缩放：矮屏上自动变小，保证顶边不越过机体可达的最高处(画布 y=816) */
+  right: calc(var(--shmup-h) * 0.022);
+  bottom: calc(var(--shmup-h) * 0.008);
+  width: clamp(40px, calc(var(--shmup-h) * 0.075), 62px);
+  height: clamp(40px, calc(var(--shmup-h) * 0.075), 62px);
   border-radius: 50%;
   display: none;                      /* 默认隐藏，仅触摸设备显示 */
   flex-direction: column;
@@ -236,10 +245,15 @@ kbd {
   transition: transform 0.08s ease, opacity 0.15s ease, box-shadow 0.15s ease;
 }
 
-.bomb-ico { display: block; margin-top: 1px; }
+.bomb-ico {
+  display: block;
+  width: clamp(15px, calc(var(--shmup-h) * 0.028), 24px);
+  height: clamp(15px, calc(var(--shmup-h) * 0.028), 24px);
+  margin-top: 1px;
+}
 
 .bomb-num {
-  font-size: 13px;
+  font-size: clamp(11px, calc(var(--shmup-h) * 0.019), 16px);
   font-weight: 700;
   line-height: 1;
   font-variant-numeric: tabular-nums;

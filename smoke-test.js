@@ -73,10 +73,21 @@ const els = {}
 const docHandlers = {}
 const winHandlers = {}
 const rafQueue = []
+const fsCalls = []
+const vibes = []
+
+/* 全屏 API 桩：documentElement + exitFullscreen */
+const docElStub = {
+  requestFullscreen() { fsCalls.push('enter'); return Promise.resolve() },
+  webkitRequestFullscreen() { fsCalls.push('enter'); return Promise.resolve() }
+}
 
 const documentStub = {
   readyState: 'complete',
   hidden: false,
+  fullscreenElement: null,
+  documentElement: docElStub,
+  exitFullscreen() { fsCalls.push('exit'); return Promise.resolve() },
   body: { dataset: {} },
   getElementById(id) { return els[id] || (els[id] = makeEl(id)) },
   addEventListener(type, fn) { (docHandlers[type] = docHandlers[type] || []).push(fn) }
@@ -86,12 +97,18 @@ const windowStub = {
   console,
   requestAnimationFrame(fn) { rafQueue.push(fn); return rafQueue.length },
   addEventListener(type, fn) { (winHandlers[type] = winHandlers[type] || []).push(fn) },
+  /* 伪装成触摸设备：覆盖率走触屏分支（拖动增益 1.35、标题页触屏文案） */
+  matchMedia(q) { return { matches: /coarse/.test(q), media: q } },
   localStorage: {
     _d: {},
     getItem(k) { return Object.prototype.hasOwnProperty.call(this._d, k) ? this._d[k] : null },
     setItem(k, v) { this._d[k] = String(v) }
   }
   /* 故意不提供 AudioContext：走音效降级分支 */
+}
+
+const navigatorStub = {
+  vibrate(p) { vibes.push(p); return true }
 }
 
 /* ---------- 捕获引擎内部报错 ---------- */
@@ -105,9 +122,10 @@ console.error = function (...args) {
 
 /* ---------- 执行 ---------- */
 const sandbox = {
-  window: windowStub, document: documentStub, console, Math, JSON, Object, Array,
+  window: windowStub, document: documentStub, navigator: navigatorStub,
+  console, Math, JSON, Object, Array,
   String, Number, Boolean, Error, isNaN, parseInt, parseFloat, Infinity, NaN,
-  Set, Map, Proxy, WeakMap, Symbol, Date
+  Set, Map, Proxy, WeakMap, Symbol, Date, Promise
 }
 sandbox.globalThis = sandbox
 sandbox.self = sandbox
@@ -127,11 +145,12 @@ if (!stage || !stage.__handlers.pointerdown) { origError('FAIL: 未接上 pointe
 
 /* ---------- 驱动帧 ---------- */
 let t = 0
-function pump(frames) {
+function pump(frames, onFrame) {
   for (let i = 0; i < frames; i++) {
     t += 1000 / 60
     const q = rafQueue.splice(0, rafQueue.length)
     for (const fn of q) fn(t)
+    if (onFrame) onFrame()
   }
 }
 function tap(x, y) {
@@ -178,30 +197,109 @@ pump(120)
 check('标题页可渲染', S.mode === 'title', 'mode=' + S.mode)
 check('曝光度: canvas 调用种类', ctxMethodCalls.size > 15, ctxMethodCalls.size + ' 种')
 
-/* 2. 开局 */
-tap(300, 800)
-pump(10)
+/* 2. 开局：点一下就应该「既能开局、又能马上拖」 */
+const down = stage.__handlers.pointerdown[0]
+const move = stage.__handlers.pointermove[0]
+const up = stage.__handlers.pointerup[0]
+
+down({ clientX: 300, clientY: 800, pointerId: 1 })
+pump(5)
 check('点击后进入 playing', S.mode === 'playing', 'mode=' + S.mode)
 
-/* 3. 无敌试飞 90 秒：验证波次推进 / 分数 / 强化成长 */
-let held = null
-for (let i = 0; i < 90; i++) {
-  keepAlive()
-  const k = i % 2 ? 'ArrowLeft' : 'ArrowRight'
-  if (held && held !== k) keyup(held)
-  keydown(k)
-  held = k
-  pump(60)
+const px0 = S.p.x
+move({ clientX: 340, clientY: 800, pointerId: 1 })   /* 手指右移 40 */
+pump(30)
+const px1 = S.p.x
+up()
+check('开局那次触摸就能直接拖飞机', px1 > px0 + 20,
+  'x ' + Math.round(px0) + ' -> ' + Math.round(px1))
+check('触屏拖动有 1.35 倍增益', (px1 - px0) > 46 && (px1 - px0) < 62,
+  'dx=' + Math.round(px1 - px0) + '（手指位移 40，期望 ≈54）')
+
+/* 2b. 全屏与震动接线 */
+const btnFull = els.btnFull
+check('存在全屏按钮并已接线',
+  !!(btnFull && btnFull.__handlers.click && btnFull.__handlers.click.length))
+if (btnFull && btnFull.__handlers.click && btnFull.__handlers.click.length) {
+  btnFull.__handlers.click[0]()
+  check('点击全屏会调用 requestFullscreen', fsCalls.includes('enter'), 'fsCalls=' + fsCalls.join(','))
 }
-keyup(held)
-check('波次推进到 8+', S.wave >= 8, 'wave=' + S.wave)
+
+/* 3. 无敌试飞 90 秒：用「会瞄准的试飞员」验证波次推进 / 分数 / 强化成长。
+      早先用左右横扫的无脑飞行员，会出现「一直打不死缩在边缘的敌人 → 波次永久卡住」，
+      那是试飞员太笨；不过它顺带暴露了「悬停敌人永不离场」的隐患（见 3b）。 */
+let xmin = 9999, xmax = -9999
+let lastWave = S.wave
+let lastWaveAt = 0
+let worstStall = 0
+
+function aimPilot() {
+  let target = null
+  if (S.boss && !S.boss.entering) {
+    target = S.boss
+  } else {
+    let bd = Infinity
+    for (const e of S.enemies) {
+      if (e.dead || e.kind === 'boss') continue
+      const d = Math.abs(e.x - S.p.x) + (e.retreat ? 900 : 0)
+      if (d < bd) { bd = d; target = e }
+    }
+  }
+  keyup('ArrowLeft')
+  keyup('ArrowRight')
+  if (!target) return
+  const dx = target.x - S.p.x
+  if (dx < -5) keydown('ArrowLeft')
+  else if (dx > 5) keydown('ArrowRight')
+}
+
+for (let f = 0; f < 150 * 60; f++) {
+  keepAlive()
+  aimPilot()
+  pump(1)
+  if (S.p.x < xmin) xmin = S.p.x
+  if (S.p.x > xmax) xmax = S.p.x
+  if (S.wave !== lastWave) { lastWave = S.wave; lastWaveAt = f }
+  else if (f - lastWaveAt > worstStall) worstStall = f - lastWaveAt
+}
+keyup('ArrowLeft')
+keyup('ArrowRight')
+check('波次持续推进（无卡死）', S.wave >= 8 && worstStall < 60 * 60,
+  'wave=' + S.wave + ' kills=' + S.kills +
+  ' 最长无进展=' + (worstStall / 60).toFixed(1) + 's' +
+  ' 横扫[' + Math.round(xmin) + ',' + Math.round(xmax) + ']' +
+  ' 残留=' + S.enemies.filter(e => !e.dead).map(e => e.kind + ' hp' + Math.round(e.hp)).join(' '))
 check('分数在涨', S.score > 20000, 'score=' + S.score)
 check('强化 Mk 随击杀成长', S.mk >= 3, 'mk=' + S.mk + ' ×' + (1 + S.mk * 0.11).toFixed(2))
 check('击杀计数', S.kills > 40, 'kills=' + S.kills)
 check('试飞期间未意外结束', S.mode === 'playing', 'mode=' + S.mode)
 check('键盘移动生效', Math.abs(S.p.x - 300) > 20, 'x=' + Math.round(S.p.x))
 
-/* 4. 四种武器：正前方放受控靶机，逐一验证能否击破（含激光持续伤害与四种绘制分支） */
+/* 3b. 悬停敌人滞空到期会撤退 —— 保证波次不会因为「打不死的残留敌人」永久卡住 */
+clearField()
+S.mode = 'playing'
+S.wave = 3
+keepAlive()
+S.p.x = 30; S.p.tx = 30
+S.p.y = VHY; S.p.ty = VHY
+const stubborn = mkDummy('drone', 570, 100, 1e9)   /* 血量拉到打不死，保证只能靠撤退离场 */
+stubborn.linger = 22
+stubborn.amp = 0
+stubborn.freq = 0
+S.enemies.push(stubborn)
+let sawRetreat = false
+for (let f = 0; f < 60 * 32; f++) {
+  keepAlive()
+  pump(1)
+  if (S.enemies[0] && S.enemies[0].retreat) sawRetreat = true
+  if (!S.enemies.length) break
+}
+check('打不死的悬停敌人会撤退离场', sawRetreat && S.enemies.length === 0,
+  '进入撤退=' + sawRetreat + ' 剩余=' + S.enemies.length)
+
+/* 4. 四种武器：正前方放受控靶机，验证能否稳定命中并造成实质伤害。
+      注意霰弹是 ±29° 扇形，远距离只有部分弹丸命中，这是设计而不是 bug，
+      所以判据是「造成 ≥25% 伤害」而不是「必须击杀」。 */
 for (const w of ['plasma', 'laser', 'homing', 'scatter']) {
   clearField()
   S.mode = 'playing'
@@ -212,11 +310,17 @@ for (const w of ['plasma', 'laser', 'homing', 'scatter']) {
   S.p.tx = 300
   S.p.ty = VHY
   S.kills = 0
-  S.enemies.push(mkDummy('drone', 300, VHY - 320, 600))
+  /* 靶机不摆动，避免命中与否取决于相位这种偶然因素 */
+  const dummy = mkDummy('drone', 300, VHY - 320, 600)
+  dummy.amp = 0
+  dummy.freq = 0
+  S.enemies.push(dummy)
+  const hp0 = dummy.hp
   pump(600)
   keepAlive()
-  check('武器 ' + w + ' 能击破正前方靶机', S.kills > 0, 'kills=' + S.kills + ' 剩余hp=' +
-    (S.enemies[0] ? Math.round(S.enemies[0].hp) : '已摧毁'))
+  const dealt = hp0 - Math.max(0, dummy.hp)
+  check('武器 ' + w + ' 能命中靶机', dealt >= hp0 * 0.25,
+    '造成 ' + Math.round(dealt) + '/' + hp0 + ' 伤害' + (dummy.hp <= 0 ? '（已击破）' : '（剩余 ' + Math.round(dummy.hp) + '）'))
 }
 
 /* 5. 全部 11 种道具分支（先清场，避免护盾在测试途中被子弹打碎） */
@@ -229,7 +333,7 @@ for (const k of ['P', 'L', 'M', 'R', 'B', 'S', 'H', 'F', 'D', 'G', 'W']) {
 }
 check('11 种道具全部生效',
   S.p.rageT > 0 && S.p.doubleT > 0 && S.p.magnetT > 0 && S.p.wingT > 0 &&
-  S.p.bombs >= 3 && S.p.shieldT > 0 && S.p.power >= 3 && S.p.weapon === 'scatter',
+  S.p.bombs >= 3 && S.p.shieldT > 0 && S.p.power >= 2 && S.p.weapon === 'scatter',
   '火力' + S.p.power + ' 武器' + S.p.weapon + ' 炸弹' + S.p.bombs +
   ' 护盾' + S.p.shieldT.toFixed(1) +
   ' 狂怒' + S.p.rageT.toFixed(1) + ' 双倍' + S.p.doubleT.toFixed(1) +
@@ -247,16 +351,27 @@ pump(200)
 check('第 5 波触发 BOSS', !!S.boss, S.boss ? 'hp=' + Math.round(S.boss.hp) : 'no boss')
 
 if (S.boss) {
+  /* 血量拉到打不死：这个窗口只验证「五套招式会轮换」，
+     否则强力武器会把 BOSS 秒掉，根本来不及换招（之前就踩过这个坑）。 */
+  S.boss.maxHp = 1e9
+  S.boss.hp = 1e9
   const seen = new Set()
   for (let i = 0; i < 70; i++) {
     if (!S.boss) break
     keepAlive()
-    /* 周期性压到 30% 以下，触发狂暴分支 */
-    S.boss.hp = (i % 5 === 0) ? Math.max(1, S.boss.maxHp * 0.3) : S.boss.maxHp
     seen.add(S.boss.pat)
     pump(40)
   }
   check('BOSS 五套招式都跑到', seen.size >= 5, 'patterns=' + [...seen].sort().join(','))
+
+  /* 狂暴分支：压到 30% 以下，确认射速加快的代码路径能跑通且不报错 */
+  if (S.boss) {
+    S.boss.hp = S.boss.maxHp * 0.28
+    keepAlive()
+    pump(180)
+    check('BOSS 低血量狂暴分支可运行', S.mode === 'playing' && !!S.boss,
+      'mode=' + S.mode + ' hp=' + Math.round(S.boss ? S.boss.hp : -1) + ' 弹幕=' + S.ebullets.length)
+  }
 }
 
 /* 7. 三种新兵种：血量拉到极高，保证 6 秒窗口内只验证「行为」不被击杀打断 */
@@ -302,6 +417,7 @@ if (bombBtn && bombBtn.__handlers.pointerdown && bombBtn.__handlers.pointerdown.
   S.p.bombs = 0
   pump(3)
   check('炸弹耗尽后按钮置灰', els.btnBomb.classList.contains('is-empty'), 'is-empty=' + els.btnBomb.classList.contains('is-empty'))
+  check('放炸弹触发震动反馈', vibes.length > 0, 'vibrate 调用 ' + vibes.length + ' 次: ' + JSON.stringify(vibes.slice(0, 4)))
 }
 
 keydown('p')

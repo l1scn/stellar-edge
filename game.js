@@ -185,6 +185,21 @@
     var BH = 225
     var SILENT = { silent: true }
 
+    /* 悬停类敌人不会自己离场。给它们一个滞空预算，到点撤退 ——
+       否则只要有一架打不死（例如缩在屏幕边缘），波次就永远不会推进。 */
+    var HOVER = { drone: 1, turret: 1, orb: 1, sniper: 1, spinner: 1, beamer: 1 }
+    var LINGER = { drone: 22, turret: 26, orb: 28, sniper: 24, spinner: 26, beamer: 20 }
+
+    /* 触屏上把手指位移放大，否则手指从屏幕下方出发时飞机够不到上半屏 */
+    var TOUCH = !!(api.touch && api.touch())
+    var DRAG_GAIN = TOUCH ? 1.35 : 1
+
+    /* 触觉反馈（仅移动端有意义），静默降级 */
+    function buzz(pattern) {
+      if (!api.buzz) return
+      try { api.buzz(pattern) } catch (e) {}
+    }
+
     var S = {
       mode: 'title', t: 0, score: 0, wave: 0,
       combo: 0, comboT: 0, bestCombo: 0, kills: 0,
@@ -194,7 +209,7 @@
       stars: [], parts: [], bullets: [], ebullets: [], enemies: [],
       picks: [], floats: [], rings: [], queue: [],
       waveDelay: 1.1, boss: null, p: null, overT: 0,
-      drag: false, offX: 0, offY: 0, hitStop: 0,
+      drag: false, offX: 0, offY: 0, lastX: 0, lastY: 0, hitStop: 0,
       keys: { left: false, right: false, up: false, down: false },
       err: '', errN: 0
     }
@@ -380,6 +395,7 @@
       var p = S.p
       S.mkFlash = 1.3
       A.power()
+      buzz(14)
       if (!p) return
       ring(p.x, p.y, 175, '255,230,150', 0.6, 5)
       burst(p.x, p.y, 16, '255,235,170', 1.1)
@@ -407,7 +423,8 @@
         kind: 'drone', x: 0, y: -50, vx: 0, vy: 0, r: 15, hp: 14, maxHp: 14,
         t: 0, fireT: 1.4, flash: 0, score: 120, amp: 60, freq: 1.8, baseY: 130,
         dead: false, ang: 0, pat: 0, patT: 0, step: 0, entering: true,
-        drift: 0, tier: 1, chargeT: 0, charge: 0, firing: 0, beamX: 0
+        drift: 0, tier: 1, chargeT: 0, charge: 0, firing: 0, beamX: 0,
+        retreat: false, linger: 0
       }
       for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) e[k] = o[k]
       if (e.kind === 'boss') {
@@ -415,6 +432,7 @@
       } else {
         e.hp = Math.max(1, Math.round(e.hp * hpMul(S.wave)))
         e.maxHp = e.hp
+        if (HOVER[e.kind]) e.linger = LINGER[e.kind] || 24
       }
       S.enemies.push(e)
       return e
@@ -504,6 +522,7 @@
       })
       S.boss = b
       A.warn()
+      buzz(45)
     }
 
     function nextWave() {
@@ -559,15 +578,27 @@
       }
 
       if (p.weapon === 'scatter') {
-        var ns = 5 + lvl
-        for (var b = 0; b < ns; b++) {
-          var tb = ns === 1 ? 0.5 : b / (ns - 1)
-          var ab = -Math.PI / 2 + (tb - 0.5) * 1.02
-          /* 射程 0.7s × 900 = 630px：够到上半屏悬停的敌机，同时靠散布自然衰减远距离伤害 */
-          S.bullets.push({
-            x: p.x, y: p.y - 12, vx: Math.cos(ab) * 900, vy: Math.sin(ab) * 900,
-            r: 5, dmg: 8, kind: 'pellet', life: 0.7
-          })
+        /* 正前方必有一发，再成对向两侧铺开。
+           早先按「总发数在 ±0.51 之间等分」的做法，偶数发时正中间没有弹丸，
+           会在最该命中的方向留出约 65px 空洞 —— 敌机贴脸站正前方反而全打空。
+           散布收到 ±0.24 弧度：320px 处约 5 发命中，贴脸约 19 发命中，
+           形成「越近越强」而不是「离远了几乎打不中」。 */
+        var pairs = 5 + lvl
+        var stepA = 0.24 / pairs
+        S.bullets.push({
+          x: p.x, y: p.y - 12, vx: 0, vy: -900,
+          r: 5, dmg: 8, kind: 'pellet', life: 0.7
+        })
+        for (var s = 1; s <= pairs; s++) {
+          var off = s * stepA
+          for (var sg = -1; sg <= 1; sg += 2) {
+            var ab = -Math.PI / 2 + sg * off
+            S.bullets.push({
+              x: p.x, y: p.y - 12,
+              vx: Math.cos(ab) * 900, vy: Math.sin(ab) * 900,
+              r: 5, dmg: 8, kind: 'pellet', life: 0.7
+            })
+          }
         }
         A.shoot()
         return
@@ -623,7 +654,9 @@
 
       for (var i = 0; i < S.enemies.length; i++) {
         var e = S.enemies[i]
-        if (e.dead || e.y > p.y - 20) continue
+        /* boss 也在 S.enemies 里，这里跳过它走下面那段专属判定，
+           否则激光会对 BOSS 结算两次（双倍伤害） */
+        if (e.dead || e.kind === 'boss' || e.y > p.y - 20) continue
         if (Math.abs(e.x - p.x) < e.r + hw) {
           hitEnemy(e, dps * dt, SILENT)
           if (!e.dead) {
@@ -743,6 +776,7 @@
       S.shake = Math.min(20, S.shake + 6)
       p.invT = 0.42
       A.hit()
+      buzz(16)
       burst(p.x, p.y, 7, '255,200,140', 1)
       if (p.hp <= 0) killPlayer()
     }
@@ -772,6 +806,7 @@
       p.wingT = 0
       S.ebullets.length = 0
       boom(p.x, p.y, 62, '255,190,96')
+      buzz([0, 45, 35, 65])
       S.flash = 0.72
       S.flashCol = '255,210,170'
       S.shake = 28
@@ -813,6 +848,7 @@
       ring(p.x, p.y, 900, '150,240,255', 1.1, 9)
       ring(p.x, p.y, 620, '255,255,255', 0.8, 4)
       A.bomb()
+      buzz(30)
       for (var i = 0; i < S.ebullets.length; i++) {
         var b = S.ebullets[i]
         burst(b.x, b.y, 2, '160,240,255', 0.7)
@@ -1072,7 +1108,7 @@
         var e = S.enemies[i]
         stepEnemy(e, dt)
         if (e.dead) { S.enemies.splice(i, 1); continue }
-        if (e.y > VH + 90 || e.x < -160 || e.x > VW + 160) { S.enemies.splice(i, 1); continue }
+        if (e.y > VH + 90 || (e.retreat && e.y < -160) || e.x < -160 || e.x > VW + 160) { S.enemies.splice(i, 1); continue }
       }
 
       if (S.boss) {
@@ -1088,7 +1124,8 @@
         var hit = false
         for (var j = 0; j < S.enemies.length; j++) {
           var en = S.enemies[j]
-          if (en.dead) continue
+          /* 同上：boss 走下面那段椭圆命中判定，不用这里的方形判定 */
+          if (en.dead || en.kind === 'boss') continue
           if (Math.abs(b.x - en.x) < en.r + b.r && Math.abs(b.y - en.y) < en.r + b.r) {
             hitEnemy(en, b.dmg)
             hit = true
@@ -1138,6 +1175,12 @@
     function stepEnemy(e, dt) {
       e.t += dt
       if (e.flash > 0) e.flash = Math.max(0, e.flash - dt * 4.2)
+
+      /* 滞空到期：向上撤退离场，让波次能收尾 */
+      if (e.linger > 0) {
+        if (e.retreat) { e.y -= 260 * dt; return }
+        if (e.t > e.linger) { e.retreat = true; return }
+      }
 
       var p = S.p
       var aim = p && !p.dead ? Math.atan2(p.y - e.y, p.x - e.x) : Math.PI / 2
@@ -2148,12 +2191,16 @@
         g.beginPath(); g.moveTo(120, 314); g.lineTo(VW - 120, 314); g.stroke()
         centerText('霓虹纵向弹幕射击', 342, 15, 'rgba(190,220,240,.75)', 500, null, 0)
         g.globalAlpha = pulse
-        centerText('点击画面 · 按空格 开始', 442, 20, '#aef0ff', 700, 'rgba(90,215,255,.9)', 0)
+        centerText(TOUCH ? '点击画面开始' : '点击画面 · 按空格 开始', 442, 20, '#aef0ff', 700, 'rgba(90,215,255,.9)', 0)
         g.globalAlpha = 1
         g.textAlign = 'center'
         g.font = '500 13px ' + FONT
         g.fillStyle = 'rgba(170,205,230,.72)'
-        g.fillText('移动  方向键 / WASD / 拖动      炸弹  空格      暂停  P', VW / 2, 486)
+        g.fillText(
+          TOUCH
+            ? '拖动画面移动      右下角按钮放炸弹      底栏暂停'
+            : '移动  方向键 / WASD / 拖动      炸弹  空格      暂停  P',
+          VW / 2, 486)
         g.font = '700 12.5px ' + FONT
         g.fillStyle = 'rgba(220,240,255,.86)'
         g.fillText('武器模组   ', VW / 2 - 96, 520)
@@ -2462,16 +2509,21 @@
       S.drag = true
       S.offX = p.x - x
       S.offY = p.y - y
+      S.lastX = x
+      S.lastY = y
       p.tx = p.x
       p.ty = p.y
     }
 
+    /* 增量式拖动：按手指的位移驱动目标点，触屏上乘一个增益 */
     function pointerMove(x, y) {
       if (!S.drag) return
       var p = S.p
       if (!p || p.dead) return
-      p.tx = clamp(x + S.offX, 26, VW - 26)
-      p.ty = clamp(y + S.offY, 108, VH - 84)
+      p.tx = clamp(p.tx + (x - S.lastX) * DRAG_GAIN, 26, VW - 26)
+      p.ty = clamp(p.ty + (y - S.lastY) * DRAG_GAIN, 108, VH - 84)
+      S.lastX = x
+      S.lastY = y
     }
 
     function pointerUp() { S.drag = false }
@@ -2559,8 +2611,23 @@
     }
     paintMode('title')
 
+    /* 是否触摸设备：决定拖动增益、标题页文案、浮动炸弹键的语义 */
+    var isCoarse = false
+    try {
+      isCoarse = !!(window.matchMedia && window.matchMedia('(pointer: coarse)').matches)
+    } catch (e) { isCoarse = false }
+
+    var buzzOn = true
+
     var game = createGame(g, b, {
       audio: audio,
+      touch: function () { return isCoarse },
+      buzz: function (pattern) {
+        if (!buzzOn || !isCoarse) return
+        try {
+          if (navigator && navigator.vibrate) navigator.vibrate(pattern)
+        } catch (e) {}
+      },
       best: function () { return best },
       onOver: function (score) {
         if (score > best) { best = score; saveBest(best); paintBest() }
@@ -2656,8 +2723,10 @@
     cv.addEventListener('pointerdown', function (e) {
       audio.ensure()
       var m = game.mode()
-      if (m === 'title' || m === 'over') { game.action(); return }
-      if (m === 'paused') { game.togglePause(); return }
+      /* 注意：这里不 return。开局/重开/继续之后继续往下走，让同一根手指立刻
+         就能拖飞机 —— 否则手机上点开游戏后必须抬手再按一次才动得了。 */
+      if (m === 'title' || m === 'over') game.action()
+      else if (m === 'paused') game.togglePause()
       if (cv.setPointerCapture) { try { cv.setPointerCapture(e.pointerId) } catch (x) {} }
       var pos = toLocal(e)
       if (pos) game.pointerDown(pos.x, pos.y)
@@ -2710,6 +2779,47 @@
       })
       btnBomb.addEventListener('contextmenu', function (e) { e.preventDefault() })
       syncBomb()
+    }
+
+    /* 全屏：手机浏览器地址栏会吃掉一大截竖向空间 */
+    var btnFull = document.getElementById('btnFull')
+    if (btnFull) {
+      var docEl = document.documentElement
+      var reqFs = docEl.requestFullscreen || docEl.webkitRequestFullscreen
+      var exitFs = document.exitFullscreen || document.webkitExitFullscreen
+
+      function fsElement() {
+        return document.fullscreenElement || document.webkitFullscreenElement || null
+      }
+      function syncFsLabel() {
+        btnFull.textContent = fsElement() ? '退出' : '全屏'
+      }
+      function toggleFs() {
+        try {
+          if (!fsElement()) {
+            if (!reqFs) return
+            var r = reqFs.call(docEl)
+            if (r && r.catch) r.catch(function () {})
+          } else if (exitFs) {
+            var r2 = exitFs.call(document)
+            if (r2 && r2.catch) r2.catch(function () {})
+          }
+        } catch (e) {}
+      }
+
+      if (!reqFs) {
+        btnFull.classList.add('is-off')
+        btnFull.title = '当前浏览器不支持全屏 API'
+        btnFull.disabled = true
+      } else {
+        btnFull.addEventListener('click', function () {
+          toggleFs()
+          btnFull.blur()
+        })
+        document.addEventListener('fullscreenchange', syncFsLabel)
+        document.addEventListener('webkitfullscreenchange', syncFsLabel)
+        syncFsLabel()
+      }
     }
 
     /* 双击页面不选中文字 */
