@@ -502,6 +502,22 @@ export function boot(opts) {
   window.addEventListener('resize', resize)
   window.addEventListener('orientationchange', () => setTimeout(resize, 120))
 
+  /* ---- WebGL 上下文丢失：不处理的话画面会永久停在黑屏，而且没有任何提示 ---- */
+  let contextLost = false
+  glCanvas.addEventListener('webglcontextlost', (e) => {
+    e.preventDefault()                      /* 允许浏览器稍后恢复上下文 */
+    contextLost = true
+    console.warn('[星刃3D] WebGL 上下文丢失')
+    if (window.__stellar3d && window.__stellar3d.notice) {
+      window.__stellar3d.notice('显卡上下文丢失（GPU 被系统回收、驱动重置或显存不足），画面会停在黑屏。正在等浏览器恢复；长时间不恢复请刷新页面。')
+    }
+  }, false)
+  glCanvas.addEventListener('webglcontextrestored', () => {
+    contextLost = false
+    resize()
+    if (window.__stellar3d && window.__stellar3d.done) window.__stellar3d.done()
+  }, false)
+
   /* ---------------- HUD ---------------- */
 
   const hud = hudCanvas.getContext('2d')
@@ -933,6 +949,26 @@ export function boot(opts) {
   let frames = 0, fpsAcc = 0, fps = 60
 
   let frameErrN = 0
+  let frameNo = 0
+  let probed = 0
+  const diagInfo = { probe: null }
+
+  /* 读默认帧缓冲的 3 个采样点，用来区分「后处理输出全黑」和「什么都没画出来」 */
+  function samplePixels() {
+    try {
+      const gl = renderer.getContext()
+      const w = gl.drawingBufferWidth
+      const h = gl.drawingBufferHeight
+      const px = new Uint8Array(4)
+      const out = []
+      for (const pt of [[0.5, 0.5], [0.5, 0.32], [0.3, 0.5]]) {
+        gl.readPixels(Math.max(0, Math.floor(w * pt[0])), Math.max(0, Math.floor(h * pt[1])),
+          1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px)
+        out.push([px[0], px[1], px[2]])
+      }
+      return out
+    } catch (e) { return null }
+  }
 
   function frame(now) {
     try {
@@ -951,7 +987,8 @@ export function boot(opts) {
       /* 后处理链在部分 GPU / 半浮点渲染目标上会在「运行期」失败（初始化期的 try 检查不到）：
          丢掉 post 退化为直出，别把整帧连同整个循环一起废掉 */
       try {
-        if (usePost && composer) composer.render()
+        if (contextLost) { /* 上下文丢失期间画不出任何东西，等 restored 事件再恢复 */ }
+        else if (usePost && composer) composer.render()
         else renderer.render(scene, camera)
       } catch (e) {
         if (!usePost) throw e
@@ -960,6 +997,49 @@ export function boot(opts) {
       }
 
       drawHud(S, best)
+
+      frameNo++
+
+      /* ---- 黑屏自检：只在最初几帧做两次 ----
+         1) 有几何体被提交（render.calls > 0）但整屏采样全为 0 → 后处理链静默失败
+            （多为半浮点渲染目标不可用），直接丢掉 post 退化为直出；
+         2) 退化后仍然全黑 → 不再是后处理的问题，把机器上的实际参数显示出来，
+            而不是继续给用户一块没有信息的黑画布。 */
+      if (probed < 2 && !contextLost && (frameNo === 45 || frameNo === 120)) {
+        probed++
+        const px = samplePixels()
+        const allBlack = !!px && px.every(c => c[0] === 0 && c[1] === 0 && c[2] === 0)
+        diagInfo.probe = {
+          frame: frameNo,
+          usePost,
+          contextLost,
+          drawCalls: renderer.info.render.calls,
+          triangles: renderer.info.render.triangles,
+          camY: Math.round(camY),
+          cam: [camera.position.x, camera.position.y, camera.position.z].map(v => Math.round(v * 10) / 10),
+          buffer: [renderer.domElement.width, renderer.domElement.height],
+          css: [Math.round(stageEl.getBoundingClientRect().width), Math.round(stageEl.getBoundingClientRect().height)],
+          dpr: window.devicePixelRatio,
+          samples: px,
+          allBlack
+        }
+        if (allBlack && renderer.info.render.calls > 0 && usePost) {
+          usePost = false
+          console.warn('[星刃3D] 后处理输出全黑（多为半浮点渲染目标不可用），已退化为直出渲染')
+        } else if (allBlack && renderer.info.render.calls > 0 && window.__stellar3d && window.__stellar3d.notice) {
+          window.__stellar3d.notice('画面全黑，且已经排除模块加载与后处理两个原因。下面这台机器上的实际渲染参数，发我即可定位。',
+            JSON.stringify(diagInfo.probe))
+        }
+      }
+
+      /* ---- 尺寸自愈：启动时的布局竞态或 DPR 变化会让缓冲区与 CSS 尺寸脱节，
+             此时 CSS 会把一个极小的位图拉伸成整块纯色，看起来就是黑屏 ---- */
+      if (frameNo % 30 === 0) {
+        const r = stageEl.getBoundingClientRect()
+        const dpr = Math.min(window.devicePixelRatio || 1, 2)
+        if (Math.abs(renderer.domElement.width - Math.round(r.width * dpr)) > 2 ||
+          Math.abs(renderer.domElement.height - Math.round(r.height * dpr)) > 2) resize()
+      }
 
       frames++
       fpsAcc += dt
@@ -975,6 +1055,27 @@ export function boot(opts) {
       /* rAF 必须放在 finally 里续上：否则任何一次异常都会让循环永久停摆，只剩黑屏 */
       window.requestAnimationFrame(frame)
     }
+  }
+
+  /* 控制台诊断出口：在 3D 页面执行 __stellar3d.diag() 即可拿到渲染实况 */
+  if (window.__stellar3d) {
+    window.__stellar3d.diag = () => ({
+      webgl: renderer.getContext().isContextLost() ? 'lost' : 'ok',
+      usePost,
+      drawCalls: renderer.info.render.calls,
+      triangles: renderer.info.render.triangles,
+      buffer: [renderer.domElement.width, renderer.domElement.height],
+      css: [Math.round(stageEl.getBoundingClientRect().width), Math.round(stageEl.getBoundingClientRect().height)],
+      dpr: window.devicePixelRatio,
+      camY: Math.round(camY),
+      cam: [camera.position.x, camera.position.y, camera.position.z].map(v => Math.round(v * 10) / 10),
+      fov: camera.fov,
+      nearFar: [camera.near, camera.far],
+      sceneChildren: scene.children.length,
+      fog: !!scene.fog,
+      frameErrN,
+      probe: diagInfo.probe
+    })
   }
 
   resize()
