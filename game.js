@@ -424,7 +424,7 @@
         t: 0, fireT: 1.4, flash: 0, score: 120, amp: 60, freq: 1.8, baseY: 130,
         dead: false, ang: 0, pat: 0, patT: 0, step: 0, entering: true,
         drift: 0, tier: 1, chargeT: 0, charge: 0, firing: 0, beamX: 0,
-        retreat: false, linger: 0
+        retreat: false, linger: 0, touchCd: 0
       }
       for (var k in o) if (Object.prototype.hasOwnProperty.call(o, k)) e[k] = o[k]
       if (e.kind === 'boss') {
@@ -711,7 +711,8 @@
       addScore(gain)
       floatText(e.x, e.y - 12, '+' + gain, '190,245,255')
 
-      if (e.kind === 'boss') { bigBossDeath(e); return }
+      /* BOSS 的分在上面已经按连击结算过一次，这里只补击破演出，不能再加一次分 */
+      if (e.kind === 'boss') { bigBossDeath(e, gain); return }
 
       boom(e.x, e.y, e.r + 8, e.kind === 'dart' ? '255,190,90' : '255,140,110')
       var ch = DROP_RATE[e.kind]
@@ -737,14 +738,15 @@
       S.picks.push({ x: x, y: y, vy: 62, t: 0, kind: force || rollDrop() })
     }
 
-    function bigBossDeath(b) {
+    /* gain 由 killEnemy 传入：BOSS 的分数已经在通用击杀路径按连击结算过，
+       这里若再加一次 b.score，同一份分值会入账两遍（实测 6000 面板值 → 12120 分） */
+    function bigBossDeath(b, gain) {
       S.boss = null
       S.flash = 0.9
       S.flashCol = '255,240,220'
       S.shake = 30
       A.boom(true)
-      addScore(b.score)
-      floatText(b.x, b.y, '+' + fmt(b.score), '255,235,180')
+      floatText(b.x, b.y, '+' + fmt(gain), '255,235,180')
       for (var i = 0; i < 9; i++) {
         (function (i) {
           later(i * 0.13, function () {
@@ -855,7 +857,12 @@
         addScore(12)
       }
       S.ebullets.length = 0
-      for (var j = S.enemies.length - 1; j >= 0; j--) hitEnemy(S.enemies[j], 155 + p.power * 45)
+      /* BOSS 也在 S.enemies 里，这里要跳过它 —— 下面那一行才是它的专属伤害，
+         否则同一发炸弹会打到 BOSS 两次（实测 520 而非设计的 320） */
+      for (var j = S.enemies.length - 1; j >= 0; j--) {
+        if (S.enemies[j].kind === 'boss') continue
+        hitEnemy(S.enemies[j], 155 + p.power * 45)
+      }
       if (S.boss) hitEnemy(S.boss, 320)
       S.hitStop = 0.12
     }
@@ -1155,16 +1162,24 @@
         }
       }
 
-      /* 敌机本体 + 激光塔光束 → 我方 */
+      /* 敌机本体 + 激光塔光束 → 我方。
+         撞机是一次「交换」而不是每帧刷伤害：同一次接触每 0.5 秒只结算一次，
+         并且无敌帧内不结算 —— 否则贴着敌机蹭会按帧刷出 2400/s 的伤害（武器只有约 100/s），
+         复活无敌的 2.6 秒里甚至能白撞掉一整条 BOSS 血。 */
       for (i = 0; i < S.enemies.length; i++) {
         var ce = S.enemies[i]
         if (ce.dead) continue
         if (ce.kind === 'beamer' && ce.firing > 0 && Math.abs(p.x - ce.x) < 16 + p.r * 0.5 && p.y > ce.y) {
           playerBurn(52 * dt)
         }
+        /* BOSS 入场动画期间不参与机身碰撞：其余伤害路径都检查了 entering，这里同样跳过 */
+        if (ce.kind === 'boss' && ce.entering) continue
         if (Math.hypot(ce.x - p.x, ce.y - p.y) < ce.r * 0.8 + p.r) {
-          hitEnemy(ce, 40)
-          playerHit(34)
+          if (p.invT <= 0 && !(ce.touchCd > 0)) {
+            ce.touchCd = 0.5
+            hitEnemy(ce, 40)
+            playerHit(34)
+          }
           break
         }
       }
@@ -1174,6 +1189,7 @@
 
     function stepEnemy(e, dt) {
       e.t += dt
+      if (e.touchCd > 0) e.touchCd -= dt
       if (e.flash > 0) e.flash = Math.max(0, e.flash - dt * 4.2)
 
       /* 滞空到期：向上撤退离场，让波次能收尾 */
@@ -1296,6 +1312,7 @@
 
     function stepBoss(b, dt) {
       b.t += dt
+      if (b.touchCd > 0) b.touchCd -= dt
       if (b.flash > 0) b.flash = Math.max(0, b.flash - dt * 4.2)
 
       if (b.entering) {

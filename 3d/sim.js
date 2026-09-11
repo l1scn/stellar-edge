@@ -165,7 +165,7 @@ export function createSim(api) {
       t: 0, fireT: 1.4, flash: 0, amp: 60, freq: 1.8, baseY: 130,
       dead: false, ang: 0, pat: 0, patT: 0, step: 0, entering: true,
       drift: 0, tier: 1, chargeT: 0, charge: 0, firing: 0,
-      retreat: false, linger: base.linger
+      retreat: false, linger: base.linger, touchCd: 0
     }
     Object.assign(e, o)
     if (e.kind === 'boss') {
@@ -398,7 +398,8 @@ export function createSim(api) {
     const gain = Math.floor(e.score * (1 + Math.min(60, S.combo) * 0.02))
     addScore(gain)
     floatText(e.x, e.y, e.h + 1, '+' + gain, '190,245,255')
-    if (e.kind === 'boss') { bigBossDeath(e); return }
+    /* BOSS 的分在上面已经按连击结算过一次，这里只补击破演出，不能再加一次分 */
+    if (e.kind === 'boss') { bigBossDeath(e, gain); return }
     boom(e.x, e.y, e.h, e.r + 8, e.kind === 'dart' ? '255,190,90' : '255,140,110')
     const ch = DROP_RATE[e.kind]
     if (Math.random() < (ch === undefined ? 0.14 : ch)) dropPick(e.x, e.y, e.h)
@@ -422,14 +423,15 @@ export function createSim(api) {
     S.picks.push({ x, y, h: 0.7, vy: 62, t: 0, kind: force || rollDrop() })
   }
 
-  function bigBossDeath(b) {
+  /* gain 由 killEnemy 传入：BOSS 的分数已经在通用击杀路径按连击结算过，
+     这里若再加一次 b.score，同一份分值会入账两遍（实测 6000 面板值 → 12120 分） */
+  function bigBossDeath(b, gain) {
     S.boss = null
     S.flash = 0.9
     S.flashCol = '255,240,220'
     S.shake = 30
     if (api.sound) api.sound('bigBoom')
-    addScore(b.score)
-    floatText(b.x, b.y, b.h + 1, '+' + fmt(b.score), '255,235,180')
+    floatText(b.x, b.y, b.h + 1, '+' + fmt(gain), '255,235,180')
     for (let i = 0; i < 9; i++) {
       later(i * 0.13, () => boom(b.x + rand(-70, 70), b.y + rand(-52, 52), b.h + rand(-1, 1), 34 + rand(0, 26), '255,170,90'))
     }
@@ -526,7 +528,12 @@ export function createSim(api) {
     buzz(30)
     for (const b of S.ebullets) { burst(b.x, b.y, b.h, 2, '160,240,255', 0.7); addScore(12) }
     S.ebullets.length = 0
-    for (let j = S.enemies.length - 1; j >= 0; j--) hitEnemy(S.enemies[j], 155 + p.power * 45)
+    /* BOSS 也在 S.enemies 里，这里要跳过它 —— 下面那一行才是它的专属伤害，
+       否则同一发炸弹会打到 BOSS 两次（实测 520 而非设计的 320） */
+    for (let j = S.enemies.length - 1; j >= 0; j--) {
+      if (S.enemies[j].kind === 'boss') continue
+      hitEnemy(S.enemies[j], 155 + p.power * 45)
+    }
     if (S.boss) hitEnemy(S.boss, 320)
     S.hitStop = 0.12
   }
@@ -764,16 +771,25 @@ export function createSim(api) {
         break
       }
     }
+    /* 撞机是一次「交换」而不是每帧刷伤害：同一次接触每 0.5 秒只结算一次，
+       并且无敌帧内不结算 —— 否则贴着敌机蹭会按帧刷出 ~1800/s 的伤害（武器只有约 130/s），
+       复活无敌的 2.6 秒里甚至能白撞掉一整条 BOSS 血。 */
     for (const ce of S.enemies) {
       if (ce.dead) continue
       if (ce.kind === 'beamer' && ce.firing > 0 && Math.abs(p.x - ce.x) < 16 + p.r * 0.5 && p.y > ce.y) playerBurn(52 * dt)
-      if (Math.hypot(ce.x - p.x, ce.y - p.y) < ce.r * 0.8 + p.r) { hitEnemy(ce, 40); playerHit(34); break }
+      /* BOSS 入场动画期间不参与机身碰撞：其余伤害路径都检查了 entering，这里同样跳过 */
+      if (ce.kind === 'boss' && ce.entering) continue
+      if (Math.hypot(ce.x - p.x, ce.y - p.y) < ce.r * 0.8 + p.r) {
+        if (p.invT <= 0 && !(ce.touchCd > 0)) { ce.touchCd = 0.5; hitEnemy(ce, 40); playerHit(34) }
+        break
+      }
     }
     if (S.boss && !S.boss.entering && Math.hypot(S.boss.x - p.x, S.boss.y - p.y) < S.boss.r * 0.85 + p.r) playerHit(40)
   }
 
   function stepEnemy(e, dt) {
     e.t += dt
+    if (e.touchCd > 0) e.touchCd -= dt
     if (e.flash > 0) e.flash = Math.max(0, e.flash - dt * 4.2)
 
     /* 滞空到期后向上撤退 —— 防止打不死的残留敌人把波次永久卡住 */
@@ -899,6 +915,7 @@ export function createSim(api) {
 
   function stepBoss(b, dt) {
     b.t += dt
+    if (b.touchCd > 0) b.touchCd -= dt
     if (b.flash > 0) b.flash = Math.max(0, b.flash - dt * 4.2)
     b.h = KIND.boss.h + Math.sin(b.t * 1.6) * 0.5
     if (b.entering) {
