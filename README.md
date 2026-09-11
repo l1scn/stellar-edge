@@ -1,17 +1,10 @@
 # 星刃 · STELLAR EDGE
 
-> 霓虹纵向弹幕射击 · 两个版本：**纯 Canvas 2D 手写引擎** 与 **Three.js 真 3D**
+> 霓虹纵向弹幕射击 · 纯 Canvas 2D 手写引擎，零依赖、零构建
 
 一款打开即玩的纵版打飞机。四种可切换的武器模组、随击杀成长的强化系统、七种敌机、每 5 波一次的多阶段 BOSS，以及全套粒子 / 泛光 / 屏幕震动特效。
 
-**在线试玩**
-
-| 版本 | 地址 | 说明 |
-| --- | --- | --- |
-| 2D 版 | https://l1scn.github.io/stellar-edge/ | 零依赖单文件引擎，判定精确、手机最省电 |
-| 3D 版 | https://l1scn.github.io/stellar-edge/3d.html | Three.js 真 3D 渲染：透视战场、实体模型、泛光后处理 |
-
-两个版本共用同一套玩法数值（武器、强化曲线、敌人血量成长、BOSS 招式），所以手感是一致的。
+**在线试玩**：https://l1scn.github.io/stellar-edge/
 
 ---
 
@@ -102,101 +95,36 @@
 
 ---
 
-## 3D 版
-
-打开 https://l1scn.github.io/stellar-edge/3d.html
-
-### 架构：模拟层与渲染层彻底分开
-
-```
-3d/sim.js      纯逻辑，不 import THREE、不碰 DOM —— 所以能在 Node 里无头测试
-3d/render.js   Three.js 场景、网格同步、HUD
-3d/main.js     输入、音效、按钮、错误兜底
-```
-
-`sim.js` 沿用 2D 版的 600×900 游戏单位与全部平衡数值，`render.js` 只负责把 (x, y) 映射到 3D 世界空间（`x → worldX`，`y → worldZ`，实体的 `h` 字段决定视觉高度）。**判定始终在那个平面内**，3D 只提供视角与层次 —— 这样俯视视角下躲弹依然可判读，不会因为换成 3D 就变得「看着躲开了却被打中」。
-
-### 不依赖任何 CDN
-
-Three.js 的核心与所需 addons（后处理链）已经复制进仓库：
-
-```
-vendor/three.module.min.js          655 KB
-vendor/addons/postprocessing/*.js    24 KB
-vendor/addons/shaders/*.js            3 KB
-```
-
-用 `3d.html` 里的 importmap 把裸模块 `three` / `three/addons/` 指到这些本地文件。复现或升级：
-
-```bash
-node tools/vendor-three.js 0.160.0
-```
-
-脚本会自己下载 npm tarball、解析 import 语句求依赖闭包、只复制真正用到的文件，并校验闭包完整。
-
-### 相机自动取景
-
-初始化与每次 resize 时，把战场四角投影到 NDC，逐步抬高相机直到四角全部可见（留 8% 边距）。这样不同宽高比、不同机型都不需要手工调参。当前相机高度会显示在页脚。
-
-### 手机体验
-
-和 2D 版一致：浮动炸弹键、全屏按钮、震动反馈、`overscroll-behavior` 防下拉刷新、拖动 1.35 倍增益。
-
-### 已知限制
-
-- **3D 版的视觉效果没有经过真机验证。** 逻辑层有 35 项无头测试覆盖，但相机角度、光照强度、材质观感、比例这些只能靠肉眼判断，而开发环境里没有浏览器。如果打开后觉得哪里不对（太暗 / 太亮 / 相机太远 / 模型太大），把截图发我，改的都是 `render.js` 顶部的几个常数。
-- 需要 WebGL。不支持时会显示明确的错误提示并给出返回 2D 版的链接，不会白屏。
-- `file://` 直接打开无法运行（ES 模块受 CORS 限制），需要静态服务器 —— GitHub Pages 上正常。
-
----
-
 ## 本地运行
 
 无需构建、无需依赖。因为用了 `file://` 之外的常规脚本与 `localStorage`，建议起个静态服务器：
 
 ```bash
-# 任选其一
-npx serve stellar-edge
-python -m http.server 8000 --directory stellar-edge
+# 任选其一（在项目根目录执行）
+npx serve .
+python -m http.server 8000
 ```
 
-或者直接用浏览器打开 `stellar-edge/index.html`（用 `file://` 打开也能玩，只是部分浏览器会限制 localStorage）。
+或者直接用浏览器打开 `index.html`（用 `file://` 打开也能玩，只是部分浏览器会限制 localStorage）。
 
 ### 冒烟测试
 
-两个版本各有一个无头测试。
-
-**2D 版**（39 项断言）用假的 DOM / Canvas 驱动真实引擎，覆盖四种武器、七种敌机、BOSS 五套招式与狂暴分支、11 种道具、暂停冻结、炸弹键、全屏接线、震动反馈、触屏拖动增益、死亡结算与重开：
+**共 45 项断言**，用假的 DOM / Canvas 驱动真实引擎，覆盖四种武器、七种敌机、BOSS 五套招式与狂暴分支、11 种道具、暂停冻结、炸弹键、全屏接线、震动反馈、触屏拖动增益、死亡结算与重开，以及撞机伤害结算、BOSS 分数与炸弹结算的回归断言：
 
 ```bash
 node smoke-test.js
 ```
 
-**3D 版**（35 项断言）直接驱动纯逻辑模拟层，另外校验 Three.js 的模块依赖图、importmap 指向、具名导入是否存在：
-
-```bash
-node smoke-test-3d.js
-```
-
-它们不只看「有没有崩」，还会抓行为回归 —— 开发过程中抓出过：敌人弹体不走、爆炸粒子过暗、暂停时战场没冻结、霰弹正前方有 65px 空洞、激光对 BOSS 结算两次、悬停敌人永不离场导致波次永久卡死。
+它不只看「有没有崩」，还会抓行为回归 —— 开发过程中抓出过：敌人弹体不走、爆炸粒子过暗、暂停时战场没冻结、霰弹正前方有 65px 空洞、激光对 BOSS 结算两次、悬停敌人永不离场导致波次永久卡死、撞机按帧刷伤害、BOSS 分数被结算两次。
 
 ## 目录
 
 ```
 stellar-edge/
-├── index.html            2D 版页面
-├── style.css             两个版本共用的样式（含触摸设备增强）
-├── game.js               2D 引擎 + 页面接线（单文件，无模块）
-├── smoke-test.js         2D 无头测试
-│
-├── 3d.html               3D 版页面（含 importmap）
-├── 3d/
-│   ├── sim.js            模拟层：纯逻辑，无 THREE 依赖
-│   ├── render.js         渲染层：Three.js 场景与 HUD
-│   ├── main.js           输入 / 音效 / 按钮 / 错误兜底
-│   └── package.json      仅用于让 Node 把这里的 .js 当 ES 模块
-├── smoke-test-3d.js      3D 模拟层无头测试
-├── vendor/               Three.js 核心与后处理 addons（不依赖 CDN）
+├── index.html            页面
+├── style.css             样式（含触摸设备增强）
+├── game.js               引擎 + 页面接线（单文件，无模块）
+├── smoke-test.js         无头测试（用假的 DOM / Canvas 驱动真实引擎）
 │
 ├── manifest.json         PWA 清单，支持「添加到主屏幕」
 ├── icon-192.png          PWA 图标
@@ -204,22 +132,20 @@ stellar-edge/
 ├── apple-touch-icon.png
 ├── favicon-32.png
 └── tools/
-    ├── make-icons.js     图标生成器（手写 PNG 编码器，无依赖）
-    └── vendor-three.js   把 Three.js 打包进仓库（手写 tar 解析，无依赖）
+    └── make-icons.js     图标生成器（手写 PNG 编码器，无依赖）
 ```
 
 ## 技术实现
 
-- **零依赖**：2D 版没有框架、没有构建步骤，`game.js` 就是浏览器直接执行的原生脚本；3D 版唯一的依赖是打包进仓库的 Three.js
-- **固定步长**：`requestAnimationFrame` 渲染 + 固定 60Hz 逻辑步长累加器，高分屏不会加速（两个版本都是）
-- **泛光**：2D 版把主画布降采样到 1/4 尺寸的隐藏画布 → 高斯模糊 → 加性回叠；3D 版用 `UnrealBloomPass`，初始化失败时自动退化为直出渲染
-- **渐变复用**：2D 版所有渐变在初始化时预建并配合 `translate` 使用，避免逐帧分配
+- **零依赖**：没有框架、没有构建步骤、没有第三方运行时代码，`game.js` 就是浏览器直接执行的原生脚本
+- **固定步长**：`requestAnimationFrame` 渲染 + 固定 60Hz 逻辑步长累加器，高分屏不会加速
+- **泛光**：把主画布降采样到 1/4 尺寸的隐藏画布 → 高斯模糊 → 加性回叠
+- **渐变复用**：所有渐变在初始化时预建并配合 `translate` 使用，避免逐帧分配
 - **单一伤害入口**：所有伤害都经过 `hitEnemy()`，强化倍率只在一处生效，新增武器不会漏算
 - **滞空预算**：悬停类敌人（无人机/炮台/光束球/狙击机/旋舞者/激光塔）有 20~28 秒滞空时间，到点向上撤退离场 —— 否则只要有一架打不死（缩在屏幕边缘），该波就永远不会结束
 - **增量式拖动**：按手指的位移驱动目标点并乘增益，而不是绝对定位，这样短行程的手指也能把机体送到上半屏
-- **对象池**：3D 版的子弹、敌机、道具、冲击环全部走预分配池，逐帧只改变换与可见性，不在热路径上 new 对象
 - **音效**：WebAudio 实时合成（振荡器 + 噪声缓冲），不支持时静默降级
-- **持久化**：最高分存 `localStorage`（两个版本分开记）
+- **持久化**：最高分存 `localStorage`
 
 ## 许可
 

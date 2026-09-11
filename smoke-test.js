@@ -453,6 +453,108 @@ check('重开后进度归零', S.mk === 0 && S.score === 0 && S.wave <= 1,
 pump(150)
 check('重开后可继续跑', S.mode === 'playing', 'mode=' + S.mode + ' wave=' + S.wave)
 
+/* 11. 伤害结算回归：撞机 / BOSS 分数 / 炸弹（这几条都曾真实出错） */
+{
+  S.mode = 'playing'
+  S.p.dead = false
+  S.p.hp = S.p.maxHp
+  S.p.lives = 3
+  S.p.weapon = 'plasma'
+  S.p.doubleT = 0
+  const R = 1 + S.mk * 0.11
+
+  /* 把机体钉在目标身上：只留撞机伤害，不掺入武器输出 */
+  function glue(target, frames, keepInv) {
+    let lost = 0
+    let taken = 0
+    for (let i = 0; i < frames; i++) {
+      S.p.dead = false
+      S.p.cd = 1e9
+      S.p.x = target.x; S.p.y = target.y
+      S.p.tx = target.x; S.p.ty = target.y
+      S.p.invT = keepInv ? 5 : 0
+      const a = target.hp
+      const b = S.p.hp
+      S.bullets.length = 0
+      pump(1)
+      lost += Math.max(0, a - target.hp)
+      taken += Math.max(0, b - S.p.hp)
+      S.p.hp = S.p.maxHp
+    }
+    return { lost, taken }
+  }
+
+  /* 撞机是一次 0.5 秒的双向交换，而不是每帧刷伤害 */
+  clearField()
+  const ramT = mkDummy('drone', S.p.x, S.p.y, 1e6)
+  S.enemies.push(ramT)
+  const r1 = glue(ramT, 60, false)
+  const cap = 40 * R * 4
+  check('撞机伤害有冷却（1 秒最多 4 次接触结算）', r1.lost > 0 && r1.lost <= cap,
+    '1 秒掉血 ' + Math.round(r1.lost) + '（上限 ' + Math.round(cap) + '，修复前 2400）')
+  check('撞机对玩家同样结算', r1.taken > 0, '玩家掉血 ' + Math.round(r1.taken))
+
+  clearField()
+  const invT = mkDummy('drone', S.p.x, S.p.y, 1e6)
+  S.enemies.push(invT)
+  const r2 = glue(invT, 60, true)
+  check('无敌帧内撞机不输出伤害（复活后不能白撞）', Math.round(r2.lost) === 0,
+    '无敌 1 秒掉血 ' + Math.round(r2.lost) + '（修复前 2400）')
+
+  /* 炸弹只对 BOSS 结算一次专属伤害 */
+  clearField()
+  const bombBoss = mkDummy('boss', S.p.x, 300, 1e6)
+  S.enemies.push(bombBoss)
+  S.boss = bombBoss
+  S.p.bombs = 3
+  S.p.dead = false
+  S.p.hp = S.p.maxHp
+  const wantBomb = 320 * R
+  const bombHp0 = bombBoss.hp
+  els.btnBomb.__handlers.pointerdown[0]({ preventDefault: function () {} })
+  check('炸弹对 BOSS 只打一次（320 × 强化倍率）', Math.abs((bombHp0 - bombBoss.hp) - wantBomb) < 0.001,
+    '掉血 ' + Math.round(bombHp0 - bombBoss.hp) + ' 应为 ' + Math.round(wantBomb) +
+    '（修复前 ' + Math.round(wantBomb + (155 + S.p.power * 45) * R) + '）')
+
+  /* BOSS 分数只在通用击杀路径结算一次 */
+  clearField()
+  S.score = 0
+  S.combo = 0
+  S.comboT = 0
+  const killBoss = mkDummy('boss', S.p.x, 300, 30)
+  killBoss.score = 6000
+  killBoss.entering = false
+  S.enemies.push(killBoss)
+  S.boss = killBoss
+  S.p.cd = 0
+  for (let i = 0; i < 300 && S.boss === killBoss; i++) {
+    S.p.dead = false
+    S.p.hp = S.p.maxHp
+    S.p.x = killBoss.x; S.p.tx = killBoss.x
+    S.p.y = 700; S.p.ty = 700
+    pump(1)
+  }
+  check('BOSS 分数按连击结算一次', S.score === 6120,
+    '入账 ' + S.score + ' 应为 6120（修复前 12120）')
+
+  /* BOSS 入场动画期间不参与机身碰撞 */
+  clearField()
+  const entering = mkDummy('boss', S.p.x, 300, 1e6)
+  entering.entering = true
+  entering.baseY = 4000        /* 让它整个测量期间都停在「入场中」 */
+  entering.y = 300
+  S.enemies.push(entering)
+  S.boss = entering
+  const r3 = glue(entering, 60, false)
+  check('入场动画期间不参与机身碰撞', r3.lost === 0 && r3.taken === 0,
+    'BOSS 掉血 ' + Math.round(r3.lost) + ' 玩家掉血 ' + Math.round(r3.taken))
+
+  clearField()
+  S.p.dead = false
+  S.p.hp = S.p.maxHp
+  S.p.cd = 0
+}
+
 /* ---------- 汇总 ---------- */
 const bad = results.filter(r => !r.ok)
 const say = (s) => process.stdout.write(s + '\n')
