@@ -129,6 +129,61 @@
 
 <div class="fatal" id="fatal"></div>
 
+<!-- 启动兜底（普通脚本，先于模块执行）：ES 模块这一段无论在哪一环失败
+     —— file:// 被跨域拦下、浏览器不支持 importmap、vendor 文件缺失、模块内抛错 ——
+     页面都不该只剩一块黑画布，而要给出能照着做的原因。 -->
+<script>
+(function () {
+  var booted = false
+  var el = null
+  var ESC = { '<': '&lt;', '>': '&gt;', '&': '&amp;' }
+
+  function box() { return el || (el = document.getElementById('fatal')) }
+
+  function show(msg, detail) {
+    if (booted) return
+    var e = box()
+    if (!e) return
+    e.style.display = 'flex'
+    e.innerHTML = '<div class="fatal-box"><h2>3D 版启动失败</h2><p>' + msg + '</p>' +
+      (detail ? '<pre>' + String(detail).replace(/[<>&]/g, function (c) { return ESC[c] }) + '</pre>' : '') +
+      '<p class="fatal-hint">2D 版仍然可用：<a href="./index.html">返回 2D 版</a></p></div>'
+    document.body.style.overflow = 'auto'
+    document.body.style.alignItems = 'flex-start'
+  }
+
+  /* 启动成功后调用：撤掉可能已经弹出的兜底提示 */
+  function done() {
+    booted = true
+    var e = box()
+    if (e && e.style.display === 'flex') {
+      e.style.display = 'none'
+      e.innerHTML = ''
+      document.body.style.overflow = ''
+      document.body.style.alignItems = ''
+    }
+  }
+
+  window.__stellar3d = { show: show, done: done, isBooted: function () { return booted } }
+
+  var FILE_HINT = '当前是 file:// 直接打开的：浏览器的跨域策略会拦下 ES 模块，3D 版必须经静态服务器访问（线上地址或本地起个静态服务器均可）。'
+
+  window.addEventListener('error', function (e) {
+    show(location.protocol === 'file:' ? FILE_HINT : '脚本加载或运行失败。',
+      (e && (e.message || (e.target && (e.target.src || e.target.href)))) || '')
+  })
+  window.addEventListener('unhandledrejection', function (e) {
+    show('初始化过程中出现未处理的异常。', (e && e.reason && (e.reason.message || e.reason)) || '')
+  })
+  window.addEventListener('load', function () {
+    setTimeout(function () {
+      show(location.protocol === 'file:' ? FILE_HINT
+        : '模块没有启动：可能是浏览器不支持 importmap，或 vendor/ 下的 Three.js 文件缺失。')
+    }, 4000)
+  })
+})()
+</script>
+
 <script type="module" src="./3d/main.js"></script>
 </body>
 </html>

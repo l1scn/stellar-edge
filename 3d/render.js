@@ -932,28 +932,49 @@ export function boot(opts) {
   const DT = 1 / 60
   let frames = 0, fpsAcc = 0, fps = 60
 
+  let frameErrN = 0
+
   function frame(now) {
-    if (!acc.last) acc.last = now
-    let dt = (now - acc.last) / 1000
-    acc.last = now
-    if (dt > 0.25) dt = 0.25
-    acc.v += dt
+    try {
+      if (!acc.last) acc.last = now
+      let dt = (now - acc.last) / 1000
+      acc.last = now
+      if (dt > 0.25) dt = 0.25
+      acc.v += dt
 
-    let steps = 0
-    while (acc.v >= DT && steps < 6) { sim.step(DT); acc.v -= DT; steps++ }
-    if (steps >= 6) acc.v = 0
+      let steps = 0
+      while (acc.v >= DT && steps < 6) { sim.step(DT); acc.v -= DT; steps++ }
+      if (steps >= 6) acc.v = 0
 
-    syncScene(dt)
+      syncScene(dt)
 
-    if (usePost && composer) composer.render()
-    else renderer.render(scene, camera)
+      /* 后处理链在部分 GPU / 半浮点渲染目标上会在「运行期」失败（初始化期的 try 检查不到）：
+         丢掉 post 退化为直出，别把整帧连同整个循环一起废掉 */
+      try {
+        if (usePost && composer) composer.render()
+        else renderer.render(scene, camera)
+      } catch (e) {
+        if (!usePost) throw e
+        usePost = false
+        console.warn('[星刃3D] 后处理运行期失败，已退化为直出渲染:', e)
+      }
 
-    drawHud(S, best)
+      drawHud(S, best)
 
-    frames++
-    fpsAcc += dt
-    if (fpsAcc >= 0.5) { fps = frames / fpsAcc; frames = 0; fpsAcc = 0 }
-    window.requestAnimationFrame(frame)
+      frames++
+      fpsAcc += dt
+      if (fpsAcc >= 0.5) { fps = frames / fpsAcc; frames = 0; fpsAcc = 0 }
+    } catch (e) {
+      frameErrN++
+      if (frameErrN === 1 || frameErrN === 60) console.error('[星刃3D] 渲染循环异常', e)
+      /* 反复失败就别再装作没事：给出可见的原因，而不是留一块黑画布 */
+      if (frameErrN === 60 && window.__stellar3d && window.__stellar3d.show) {
+        window.__stellar3d.show('渲染循环反复抛出异常，画面可能已经停住。', e && e.message ? e.message : e)
+      }
+    } finally {
+      /* rAF 必须放在 finally 里续上：否则任何一次异常都会让循环永久停摆，只剩黑屏 */
+      window.requestAnimationFrame(frame)
+    }
   }
 
   resize()

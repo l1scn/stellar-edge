@@ -74,6 +74,12 @@ function createAudio() {
 /* ---------------- 启动 ---------------- */
 
 function fatal(msg, detail) {
+  /* 统一走 3d.html 里那个普通脚本的兜底入口：它知道启动是否已经成功，
+     并在成功后自动撤掉提示，避免这里的失败被静默吞掉 */
+  if (window.__stellar3d && window.__stellar3d.show) {
+    window.__stellar3d.show(msg, detail)
+    return
+  }
   const el = $('fatal')
   if (!el) return
   el.style.display = 'flex'
@@ -116,6 +122,9 @@ function main() {
     fatal('WebGL 初始化失败，可能是浏览器不支持或显卡被禁用。', e && e.message ? e.message : e)
     return
   }
+
+  /* 启动成功：撤掉 3d.html 里那道兜底提示 */
+  if (window.__stellar3d && window.__stellar3d.done) window.__stellar3d.done()
 
   const sim = game.sim
   const S = sim.state
